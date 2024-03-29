@@ -155,7 +155,7 @@ class HotelSearchTest {
         starTerms.getBuckets().forEach(bucket -> {
             System.out.println(bucket.getKeyAsString()+":"+bucket.getDocCount());
             starList.add(bucket.getKeyAsString());
-        });
+        }); //；；
 
         hashMap.put("品牌",brandList);
         hashMap.put("城市",cityList);
