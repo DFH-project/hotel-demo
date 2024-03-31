@@ -9,6 +9,8 @@ import cn.itcast.hotel.service.IHotelService;
 import com.alibaba.fastjson.JSON;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import org.apache.commons.lang3.StringUtils;
+import org.elasticsearch.action.delete.DeleteRequest;
+import org.elasticsearch.action.index.IndexRequest;
 import org.elasticsearch.action.search.SearchRequest;
 import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.client.RequestOptions;
@@ -16,6 +18,7 @@ import org.elasticsearch.client.RestHighLevelClient;
 import org.elasticsearch.common.geo.GeoPoint;
 import org.elasticsearch.common.text.Text;
 import org.elasticsearch.common.unit.DistanceUnit;
+import org.elasticsearch.common.xcontent.XContentType;
 import org.elasticsearch.index.query.BoolQueryBuilder;
 import org.elasticsearch.index.query.QueryBuilders;
 import org.elasticsearch.index.query.functionscore.FunctionScoreQueryBuilder;
@@ -28,6 +31,10 @@ import org.elasticsearch.search.fetch.subphase.highlight.HighlightBuilder;
 import org.elasticsearch.search.fetch.subphase.highlight.HighlightField;
 import org.elasticsearch.search.sort.SortBuilders;
 import org.elasticsearch.search.sort.SortOrder;
+import org.elasticsearch.search.suggest.Suggest;
+import org.elasticsearch.search.suggest.SuggestBuilder;
+import org.elasticsearch.search.suggest.SuggestBuilders;
+import org.elasticsearch.search.suggest.completion.CompletionSuggestion;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.CollectionUtils;
@@ -70,23 +77,32 @@ public class HotelService extends ServiceImpl<HotelMapper, Hotel> implements IHo
     public PageResult filters(RequestParams params) throws IOException {
         SearchRequest request = new SearchRequest("hotel");
 
+        buildQuery(params, request);
+
+
+        SearchResponse response = client.search(request, RequestOptions.DEFAULT);
+        PageResult pageResult = this.extracted(response);
+        return pageResult;
+    }
+
+    private static void buildQuery(RequestParams params, SearchRequest request) {
         int size = params.getSize();
         int page = params.getPage();
         BoolQueryBuilder boolQueryBuilder = QueryBuilders.boolQuery();
         if (StringUtils.isNotEmpty(params.getKey())){
-            request.source().query(QueryBuilders.matchQuery("all",params.getKey()));
+            request.source().query(QueryBuilders.matchQuery("all", params.getKey()));
         }else{
             request.source().query(QueryBuilders.matchAllQuery());
         }
         //条件过滤
         if (StringUtils.isNotEmpty(params.getCity())){
-            boolQueryBuilder.filter(QueryBuilders.termQuery("city",params.getCity()));
+            boolQueryBuilder.filter(QueryBuilders.termQuery("city", params.getCity()));
         }
         if (StringUtils.isNotEmpty(params.getBrand())){
-            boolQueryBuilder.must(QueryBuilders.termQuery("brand",params.getBrand()));
+            boolQueryBuilder.must(QueryBuilders.termQuery("brand", params.getBrand()));
         }
         if (StringUtils.isNotEmpty(params.getStarName())){
-            boolQueryBuilder.filter(QueryBuilders.termQuery("starName",params.getStarName()));
+            boolQueryBuilder.filter(QueryBuilders.termQuery("starName", params.getStarName()));
         }
         if (StringUtils.isNotEmpty(params.getMinPrice()) && StringUtils.isNotEmpty(params.getMaxPrice())){
             boolQueryBuilder.filter(QueryBuilders.rangeQuery("price").gte(params.getMinPrice()).lte(params.getMaxPrice()));
@@ -108,19 +124,16 @@ public class HotelService extends ServiceImpl<HotelMapper, Hotel> implements IHo
         request.source().from(page-1).size(size);
         request.source().sort("price", SortOrder.DESC);
         if (StringUtils.isNotEmpty(params.getLocation())){
-            request.source().sort(SortBuilders.geoDistanceSort("location",new GeoPoint(params.getLocation())).order(SortOrder.ASC).unit(DistanceUnit.KILOMETERS));
+            request.source().sort(SortBuilders.geoDistanceSort("location",
+                    new GeoPoint(params.getLocation())).order(SortOrder.ASC).unit(DistanceUnit.KILOMETERS));
         }
-
-
-        SearchResponse response = client.search(request, RequestOptions.DEFAULT);
-        PageResult pageResult = this.extracted(response);
-        return pageResult;
     }
 
     @Override
-    public Map<String, List<String>> getFilters() throws IOException {
+    public Map<String, List<String>> getFilters(RequestParams params) throws IOException {
         SearchRequest request = new SearchRequest("hotel");
         Map<String, List<String>>  hashMap = new HashMap<>();
+        buildQuery(params, request);
         request.source().size(0);
         request.source().aggregation(AggregationBuilders.terms("brandAgg").
                 field("brand").size(10)).
@@ -158,6 +171,58 @@ public class HotelService extends ServiceImpl<HotelMapper, Hotel> implements IHo
 
         return hashMap;
     }
+
+    @Override
+    public List<String> getSuggestions(String prefix) throws IOException {
+        SearchRequest request=new SearchRequest("hotel");
+        request.source().suggest(new SuggestBuilder().addSuggestion(
+                        "suggestTest", SuggestBuilders.completionSuggestion("suggestion").prefix(prefix)
+                                .skipDuplicates(true).size(10)
+                ));
+        SearchResponse response = client.search(request, RequestOptions.DEFAULT);
+
+        Suggest suggest = response.getSuggest();
+
+        CompletionSuggestion suggestion = suggest.getSuggestion("suggestTest");
+
+        List<CompletionSuggestion.Entry.Option> optionList = suggestion.getOptions();
+        List<String> list = new ArrayList<>();
+        optionList.forEach(option ->{
+            String text = option.getText().toString();
+            list.add(text);
+        });
+        return list;
+    }
+
+    @Override
+    public void insertById(Long id) {
+        try {
+            Hotel hotel=getById(id);
+
+            HotelDoc hotelDoc=new HotelDoc(hotel);
+
+            IndexRequest request=new IndexRequest("hotel").id(hotel.getId().toString());
+            // 准备JSON文档
+            request.source(JSON.toJSONString(hotelDoc), XContentType.JSON);
+
+            client.index(request,RequestOptions.DEFAULT);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
+    @Override
+    public void delById(Long id) {
+        try {
+            DeleteRequest deleteRequest=new DeleteRequest("hotel", String.valueOf(id));
+
+
+            client.delete(deleteRequest,  RequestOptions.DEFAULT);
+        } catch (IOException e) {
+            throw new RuntimeException(e);
+        }
+    }
+
 
     private PageResult extracted( SearchResponse response) throws IOException {
         PageResult pageResult = new PageResult();
